@@ -1,0 +1,4 @@
+server: imap.gmail.com
+email: your-email@gmail.com
+password: your_password
+interval: 300

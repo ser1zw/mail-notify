@@ -1,0 +1,73 @@
+#!/usr/bin/env ruby
+# -*- mode: ruby; coding: utf-8-unix -*-
+require 'net/imap'
+require 'date'
+require 'yaml'
+require 'logger'
+require 'optparse'
+require 'nkf'
+
+Version = '0.0.1'
+
+def notify(messages, icon_path = nil)
+  msg = messages.map { |m| "#{m[:date]} [#{m[:from]}]  #{m[:subject]}" }.join("\r\n")
+  icon_opt = icon_path ? '-i ' + icon_path : ''
+  system "notify-send #{icon_opt} '#{messages.size} unread items' '#{msg}'"
+end
+
+def notify_format(str, limit)
+  return '' unless str
+  str = NKF.nkf('-sm', str).encode('UTF-8', :invalid => :replace, :undef => :replace)
+  str = str[0, limit - 3] + '...' if str.size > limit
+  str
+end
+
+workdir = File.dirname(File.expand_path(__FILE__))
+config = YAML.load(File.read("#{workdir}/config.yml"))
+interval = config['interval'] || 300
+icon_path = "#{workdir}/icon.png"
+debug_mode = false
+opt = OptionParser.new
+opt.on('-d', '--debug', 'Enable debug mode') { debug_mode = true }
+opt.parse!(ARGV)
+
+Process.daemon unless debug_mode
+pid = Process.pid
+logfile = debug_mode ? STDOUT : "#{workdir}/logs/#{__FILE__}.#{pid}.log"
+logger = Logger.new(logfile, 'daily')
+logger.progname = __FILE__
+logger.level = debug_mode ? Logger::DEBUG : Logger::INFO
+logger.info <<-EOS
+start pid=#{pid}
+server=#{config['server']}
+email=#{config['email']}
+interval=#{config['interval']}
+EOS
+
+loop {
+  begin
+    imap = Net::IMAP.new(config['server'], 993, true)
+    imap.login(config['email'], config['password'])
+    imap.select('INBOX')
+    messages = []
+    imap.search(['UNSEEN']).each { |message_id|
+      envelope = imap.fetch(message_id, 'ENVELOPE')[0].attr['ENVELOPE']
+      logger.debug "From: #{envelope.from[0].name}"
+      logger.debug "Subject: #{envelope.subject}"
+      messages << {
+        date: DateTime.parse(envelope.date).strftime("%m/%d %H:%M"),
+        from: notify_format(envelope.from[0].name, 10),
+        subject: notify_format(envelope.subject, 15)
+      }
+    }
+    logger.debug messages
+    notify messages if messages.size > 0
+    imap.logout
+    sleep interval
+  rescue => e
+    logger.error e
+    exit
+  end
+}
+
+
